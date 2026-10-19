@@ -8,8 +8,10 @@ import os
 import xml.etree.ElementTree as ET
 
 from datetime import datetime, timezone, timedelta
-from email.utils import format_datetime
-from urllib.parse import urlencode
+from email.utils import (
+    format_datetime,
+    parsedate_to_datetime,
+)
 
 
 # ============================================================
@@ -31,8 +33,10 @@ CSE_API_URL = "https://cse.google.com/cse/element/v1"
 OUTPUT_FILE = "osaka_police_rugby.xml"
 
 FEED_TITLE = "大阪府警「ラグビー」検索結果"
+
 FEED_DESCRIPTION = (
-    "大阪府警察ウェブサイト内で「ラグビー」にヒットするページの更新監視RSS"
+    "大阪府警察ウェブサイト内で"
+    "「ラグビー」にヒットするページの更新監視RSS"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -57,7 +61,12 @@ HEADERS = {
 }
 
 
-def get_with_retry(url, params=None, retries=3, timeout=30):
+def get_with_retry(
+    url,
+    params=None,
+    retries=3,
+    timeout=30,
+):
     last_error = None
 
     for attempt in range(1, retries + 1):
@@ -73,6 +82,7 @@ def get_with_retry(url, params=None, retries=3, timeout=30):
                 f"GET {response.url[:180]}"
                 f"{'...' if len(response.url) > 180 else ''}"
             )
+
             print(
                 f"HTTP: {response.status_code} / "
                 f"{len(response.content)} bytes"
@@ -82,11 +92,13 @@ def get_with_retry(url, params=None, retries=3, timeout=30):
                 return response
 
             last_error = RuntimeError(
-                f"HTTP {response.status_code}: {response.url}"
+                f"HTTP {response.status_code}: "
+                f"{response.url}"
             )
 
         except Exception as e:
             last_error = e
+
             print(
                 f"取得失敗 "
                 f"({attempt}/{retries}): "
@@ -102,7 +114,7 @@ def get_with_retry(url, params=None, retries=3, timeout=30):
 
 
 # ============================================================
-# cse.js の設定取得
+# CSE設定
 # ============================================================
 
 def extract_cse_config():
@@ -125,13 +137,12 @@ def extract_cse_config():
 
     token = token_match.group(1)
 
-    # cse_token の近辺にある設定ブロックを使用する。
     token_pos = token_match.start()
 
-    block_start = max(0, token_pos - 5000)
-    block_end = min(len(text), token_pos + 5000)
-
-    block = text[block_start:block_end]
+    block = text[
+        max(0, token_pos - 5000):
+        min(len(text), token_pos + 5000)
+    ]
 
     version_match = re.search(
         r'"cselibVersion"\s*:\s*"([^"]+)"',
@@ -150,21 +161,20 @@ def extract_cse_config():
 
     if not version_match:
         raise RuntimeError(
-            "cse.js から cselibVersion を取得できませんでした"
+            "cselibVersionを取得できませんでした"
         )
 
     if not exp_match:
         raise RuntimeError(
-            "cse.js から exp を取得できませんでした"
+            "expを取得できませんでした"
         )
 
     if not fexp_match:
         raise RuntimeError(
-            "cse.js から fexp を取得できませんでした"
+            "fexpを取得できませんでした"
         )
 
     version = version_match.group(1)
-
     exp = json.loads(exp_match.group(1))
     fexp = json.loads(fexp_match.group(1))
 
@@ -182,14 +192,18 @@ def extract_cse_config():
 
 
 # ============================================================
-# JSONP解析
+# JSONP
 # ============================================================
 
 def parse_jsonp(text):
     start = text.find("(")
     end = text.rfind(")")
 
-    if start == -1 or end == -1 or end <= start:
+    if (
+        start == -1
+        or end == -1
+        or end <= start
+    ):
         raise RuntimeError(
             "Google検索結果のJSONPを解析できませんでした"
         )
@@ -201,12 +215,12 @@ def parse_jsonp(text):
 
     except json.JSONDecodeError as e:
         raise RuntimeError(
-            f"Google検索結果JSONの解析に失敗しました: {e}"
+            f"Google検索結果JSON解析失敗: {e}"
         )
 
 
 # ============================================================
-# Google Custom Search
+# Google検索
 # ============================================================
 
 def fetch_search_page(config, start):
@@ -223,9 +237,11 @@ def fetch_search_page(config, start):
         "sort": "",
         "exp": ",".join(config["exp"]),
         "fexp": ",".join(
-            str(x) for x in config["fexp"]
+            str(x)
+            for x in config["fexp"]
         ),
-        "callback": "google.search.cse.api10051",
+        "callback":
+            "google.search.cse.api10051",
         "rurl": SEARCH_PAGE,
         "start": str(start),
     }
@@ -244,8 +260,6 @@ def fetch_all_results():
     all_items = {}
     estimated_count = None
 
-    # Google CSE の通常検索結果は最大100件程度まで
-    # ページングできるため start=0～90 を確認する。
     for start in range(0, 100, 10):
         print()
         print(
@@ -257,7 +271,10 @@ def fetch_all_results():
             start,
         )
 
-        cursor = data.get("cursor", {})
+        cursor = data.get(
+            "cursor",
+            {},
+        )
 
         if estimated_count is None:
             estimated_count = (
@@ -272,7 +289,10 @@ def fetch_all_results():
                 estimated_count,
             )
 
-        results = data.get("results") or []
+        results = (
+            data.get("results")
+            or []
+        )
 
         print(
             f"このページの取得件数: "
@@ -282,8 +302,6 @@ def fetch_all_results():
         if not results:
             break
 
-        new_on_page = 0
-
         for item in results:
             url = (
                 item.get("unescapedUrl")
@@ -292,26 +310,30 @@ def fetch_all_results():
             ).strip()
 
             title = (
-                item.get("titleNoFormatting")
+                item.get(
+                    "titleNoFormatting"
+                )
                 or item.get("title")
                 or ""
             ).strip()
 
             description = (
-                item.get("contentNoFormatting")
+                item.get(
+                    "contentNoFormatting"
+                )
                 or ""
             ).strip()
 
             if not url or not title:
                 continue
 
-            # 大阪府警ドメインだけを採用
             if not url.startswith(
                 "https://www.police.pref.osaka.lg.jp/"
             ):
                 continue
 
             title = html.unescape(title)
+
             description = html.unescape(
                 description
             )
@@ -320,52 +342,123 @@ def fetch_all_results():
                 all_items[url] = {
                     "title": title,
                     "url": url,
-                    "description": description,
+                    "description":
+                        description,
                 }
-                new_on_page += 1
 
-        print(
-            f"有効URL追加: {new_on_page}件"
-        )
-
-        # 10件未満なら最終ページと判断
         if len(results) < 10:
             break
 
-        # Googleへの連続アクセスを少し空ける
         time.sleep(1)
 
     print()
     print(
-        f"今回取得できたユニークURL: "
-        f"{len(all_items)}件"
+        "今回取得できたユニークURL:",
+        len(all_items),
     )
 
-    return list(all_items.values())
+    return list(
+        all_items.values()
+    )
 
 
 # ============================================================
-# 既存RSS読込
+# 大阪府警ページのCMSタイムスタンプ
+# ============================================================
+
+def fetch_page_timestamp(url):
+    try:
+        response = get_with_retry(
+            url,
+            retries=2,
+            timeout=30,
+        )
+
+        match = re.search(
+            r'<meta\s+name=["\']nsls:timestamp["\']'
+            r'\s+content=["\']([^"\']+)["\']',
+            response.text,
+            re.IGNORECASE,
+        )
+
+        if not match:
+            # 属性順が逆の場合にも対応
+            match = re.search(
+                r'<meta\s+content=["\']([^"\']+)["\']'
+                r'\s+name=["\']nsls:timestamp["\']',
+                response.text,
+                re.IGNORECASE,
+            )
+
+        if not match:
+            print(
+                "CMSタイムスタンプなし:",
+                url,
+            )
+            return None
+
+        raw = match.group(1).strip()
+
+        dt = parsedate_to_datetime(raw)
+
+        if dt.tzinfo is None:
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        dt = dt.astimezone(JST)
+
+        print(
+            "CMS日時:",
+            dt.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+            url,
+        )
+
+        return dt
+
+    except Exception as e:
+        print(
+            "CMS日時取得失敗:",
+            type(e).__name__,
+            e,
+            url,
+        )
+
+        return None
+
+
+# ============================================================
+# 既存RSS
 # ============================================================
 
 def load_existing_feed():
     existing = {}
 
-    if not os.path.exists(OUTPUT_FILE):
+    if not os.path.exists(
+        OUTPUT_FILE
+    ):
         print("既存RSS件数: 0")
         return existing
 
     try:
-        tree = ET.parse(OUTPUT_FILE)
+        tree = ET.parse(
+            OUTPUT_FILE
+        )
+
         root = tree.getroot()
 
-        channel = root.find("channel")
+        channel = root.find(
+            "channel"
+        )
 
         if channel is None:
-            print("既存RSS件数: 0")
             return existing
 
-        for item in channel.findall("item"):
+        for item in channel.findall(
+            "item"
+        ):
             title = item.findtext(
                 "title",
                 default="",
@@ -376,20 +469,33 @@ def load_existing_feed():
                 default="",
             ).strip()
 
-            description = item.findtext(
-                "description",
-                default="",
-            ).strip()
+            description = (
+                item.findtext(
+                    "description",
+                    default="",
+                ).strip()
+            )
 
-            pub_date = item.findtext(
-                "pubDate",
-                default="",
-            ).strip()
+            pub_date = (
+                item.findtext(
+                    "pubDate",
+                    default="",
+                ).strip()
+            )
 
-            guid = item.findtext(
-                "guid",
-                default="",
-            ).strip()
+            guid = (
+                item.findtext(
+                    "guid",
+                    default="",
+                ).strip()
+            )
+
+            source_date = (
+                item.findtext(
+                    "sourceDate",
+                    default="",
+                ).strip()
+            )
 
             if not link:
                 continue
@@ -397,25 +503,32 @@ def load_existing_feed():
             existing[link] = {
                 "title": title,
                 "url": link,
-                "description": description,
-                "pubDate": pub_date,
-                "guid": guid,
+                "description":
+                    description,
+                "pubDate":
+                    pub_date,
+                "guid":
+                    guid,
+                "sourceDate":
+                    source_date,
             }
 
     except Exception as e:
         raise RuntimeError(
-            f"既存RSSの読み込みに失敗しました: {e}"
+            "既存RSSの読み込みに"
+            f"失敗しました: {e}"
         )
 
     print(
-        f"既存RSS件数: {len(existing)}"
+        "既存RSS件数:",
+        len(existing),
     )
 
     return existing
 
 
 # ============================================================
-# RSS生成
+# RSS
 # ============================================================
 
 def make_guid(url):
@@ -491,6 +604,17 @@ def build_rss(items):
             "pubDate",
         ).text = data["pubDate"]
 
+        # 独自要素。
+        # CMS日時取得済みかどうかを
+        # 次回実行時に判別するために保存する。
+        ET.SubElement(
+            item,
+            "sourceDate",
+        ).text = data.get(
+            "sourceDate",
+            "",
+        )
+
         guid = ET.SubElement(
             item,
             "guid",
@@ -499,7 +623,9 @@ def build_rss(items):
 
         guid.text = data["guid"]
 
-    tree = ET.ElementTree(rss)
+    tree = ET.ElementTree(
+        rss
+    )
 
     try:
         ET.indent(
@@ -537,64 +663,133 @@ def main():
     if not current:
         raise RuntimeError(
             "検索結果が0件だったため、"
-            "異常と判断してRSSを変更しません"
+            "RSSを変更しません"
         )
 
-    now = datetime.now(JST)
+    current_by_url = {
+        item["url"]: item
+        for item in current
+    }
 
-    merged = dict(existing)
+    # 既存RSS + 今回検索結果
+    all_urls = set(existing)
+    all_urls.update(
+        current_by_url
+    )
 
-    new_count = 0
+    merged = {}
 
-    for data in current:
-        url = data["url"]
+    timestamp_fetched = 0
+    timestamp_failed = 0
 
-        if url in existing:
-            # タイトルや説明文は現在値へ更新するが、
-            # 初回検出日時は維持する。
-            old = existing[url]
+    print()
+    print(
+        "CMS日時の補正を開始します"
+    )
 
-            merged[url] = {
-                "title": data["title"],
-                "url": url,
-                "description": data[
-                    "description"
-                ],
-                "pubDate": old["pubDate"],
-                "guid": (
-                    old["guid"]
-                    or make_guid(url)
-                ),
-            }
+    for number, url in enumerate(
+        sorted(all_urls),
+        start=1,
+    ):
+        old = existing.get(url)
+        new = current_by_url.get(url)
 
-        else:
-            merged[url] = {
-                "title": data["title"],
-                "url": url,
-                "description": data[
-                    "description"
-                ],
-                "pubDate": format_datetime(now),
-                "guid": make_guid(url),
-            }
+        title = (
+            new["title"]
+            if new
+            else old["title"]
+        )
 
-            new_count += 1
+        description = (
+            new["description"]
+            if new
+            else old["description"]
+        )
+
+        guid = (
+            old["guid"]
+            if old and old.get("guid")
+            else make_guid(url)
+        )
+
+        source_date = (
+            old.get("sourceDate", "")
+            if old
+            else ""
+        )
+
+        pub_date = (
+            old.get("pubDate", "")
+            if old
+            else ""
+        )
+
+        # sourceDateが空なら、
+        # まだCMS日時を確認していない。
+        if not source_date:
+            print()
+            print(
+                f"[{number}/{len(all_urls)}] "
+                f"日時確認"
+            )
+
+            dt = fetch_page_timestamp(
+                url
+            )
+
+            if dt:
+                source_date = (
+                    dt.isoformat()
+                )
+
+                pub_date = (
+                    format_datetime(dt)
+                )
+
+                timestamp_fetched += 1
+
+            else:
+                # 日時が取れないページは、
+                # 新規ページなら検出日時を使用。
+                # 既存ページなら既存pubDateを維持。
+                if not pub_date:
+                    dt = datetime.now(JST)
+
+                    pub_date = (
+                        format_datetime(dt)
+                    )
+
+                source_date = "unavailable"
+
+                timestamp_failed += 1
+
+            time.sleep(0.2)
+
+        if not pub_date:
+            pub_date = format_datetime(
+                datetime.now(JST)
+            )
+
+        merged[url] = {
+            "title": title,
+            "url": url,
+            "description":
+                description,
+            "pubDate":
+                pub_date,
+            "guid":
+                guid,
+            "sourceDate":
+                source_date,
+        }
 
     def sort_key(item):
-        pub_date = item.get(
-            "pubDate",
-            "",
-        )
-
         try:
-            from email.utils import (
-                parsedate_to_datetime,
+            return (
+                parsedate_to_datetime(
+                    item["pubDate"]
+                )
             )
-
-            return parsedate_to_datetime(
-                pub_date
-            )
-
         except Exception:
             return datetime.min.replace(
                 tzinfo=timezone.utc
@@ -606,27 +801,53 @@ def main():
         reverse=True,
     )
 
-    print()
-    print(
-        f"今回の検索結果: {len(current)}件"
-    )
-    print(
-        f"新規URL: {new_count}件"
-    )
-    print(
-        f"累積RSS件数: {len(items)}件"
+    new_urls = (
+        set(current_by_url)
+        - set(existing)
     )
 
     print()
-    print("--- RSS上位30件 ---")
+    print(
+        "今回の検索結果:",
+        len(current),
+    )
+
+    print(
+        "今回初めて検索結果に"
+        "現れたURL:",
+        len(new_urls),
+    )
+
+    print(
+        "今回CMS日時を取得:",
+        timestamp_fetched,
+    )
+
+    print(
+        "CMS日時取得不能:",
+        timestamp_failed,
+    )
+
+    print(
+        "累積RSS件数:",
+        len(items),
+    )
+
+    print()
+    print(
+        "--- RSS上位30件 ---"
+    )
 
     for i, item in enumerate(
         items[:30],
         start=1,
     ):
         print(
-            f"{i}. {item['title']}"
+            f"{i}. "
+            f"{item['pubDate']} "
+            f"{item['title']}"
         )
+
         print(
             f"   {item['url']}"
         )
