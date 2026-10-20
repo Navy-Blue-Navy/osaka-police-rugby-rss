@@ -212,7 +212,6 @@ def parse_jsonp(text):
 
     try:
         return json.loads(payload)
-
     except json.JSONDecodeError as e:
         raise RuntimeError(
             f"Google検索結果JSON解析失敗: {e}"
@@ -333,7 +332,6 @@ def fetch_all_results():
                 continue
 
             title = html.unescape(title)
-
             description = html.unescape(
                 description
             )
@@ -363,16 +361,92 @@ def fetch_all_results():
 
 
 # ============================================================
-# 大阪府警ページのCMSタイムスタンプ
+# 大阪府警ページ/PDFのソース日時
 # ============================================================
 
-def fetch_page_timestamp(url):
+def parse_http_date(raw):
+    if not raw:
+        return None
+
+    try:
+        dt = parsedate_to_datetime(
+            raw.strip()
+        )
+
+        if dt.tzinfo is None:
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        return dt.astimezone(JST)
+
+    except Exception:
+        return None
+
+
+def fetch_source_timestamp(url):
+    """
+    HTML:
+        nsls:timestamp を使用。
+
+    PDF:
+        HTTP Last-Modified を使用。
+
+    戻り値:
+        (datetime または None, source_kind)
+
+    source_kind:
+        "cms"
+        "last-modified"
+        "unavailable"
+    """
+
     try:
         response = get_with_retry(
             url,
             retries=2,
             timeout=30,
         )
+
+        content_type = (
+            response.headers.get(
+                "Content-Type",
+                "",
+            )
+            .split(";", 1)[0]
+            .strip()
+            .lower()
+        )
+
+        is_pdf = (
+            url.lower().endswith(".pdf")
+            or content_type == "application/pdf"
+        )
+
+        if is_pdf:
+            raw = response.headers.get(
+                "Last-Modified"
+            )
+
+            dt = parse_http_date(raw)
+
+            if dt:
+                print(
+                    "PDF Last-Modified:",
+                    dt.strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                    url,
+                )
+
+                return dt, "last-modified"
+
+            print(
+                "PDF Last-Modifiedなし:",
+                url,
+            )
+
+            return None, "unavailable"
 
         match = re.search(
             r'<meta\s+name=["\']nsls:timestamp["\']'
@@ -395,18 +469,21 @@ def fetch_page_timestamp(url):
                 "CMSタイムスタンプなし:",
                 url,
             )
-            return None
+
+            return None, "unavailable"
 
         raw = match.group(1).strip()
 
-        dt = parsedate_to_datetime(raw)
+        dt = parse_http_date(raw)
 
-        if dt.tzinfo is None:
-            dt = dt.replace(
-                tzinfo=timezone.utc
+        if not dt:
+            print(
+                "CMSタイムスタンプ解析失敗:",
+                raw,
+                url,
             )
 
-        dt = dt.astimezone(JST)
+            return None, "unavailable"
 
         print(
             "CMS日時:",
@@ -416,17 +493,17 @@ def fetch_page_timestamp(url):
             url,
         )
 
-        return dt
+        return dt, "cms"
 
     except Exception as e:
         print(
-            "CMS日時取得失敗:",
+            "ソース日時取得失敗:",
             type(e).__name__,
             e,
             url,
         )
 
-        return None
+        return None, "unavailable"
 
 
 # ============================================================
@@ -605,8 +682,13 @@ def build_rss(items):
         ).text = data["pubDate"]
 
         # 独自要素。
-        # CMS日時取得済みかどうかを
-        # 次回実行時に判別するために保存する。
+        # 取得元の日付を次回実行時にも保持する。
+        #
+        # HTML:
+        #   CMSの nsls:timestamp
+        #
+        # PDF:
+        #   HTTP Last-Modified
         ET.SubElement(
             item,
             "sourceDate",
@@ -673,18 +755,21 @@ def main():
 
     # 既存RSS + 今回検索結果
     all_urls = set(existing)
+
     all_urls.update(
         current_by_url
     )
 
     merged = {}
 
-    timestamp_fetched = 0
+    cms_fetched = 0
+    pdf_last_modified_fetched = 0
     timestamp_failed = 0
+    pdf_rechecked = 0
 
     print()
     print(
-        "CMS日時の補正を開始します"
+        "ソース日時の補正を開始します"
     )
 
     for number, url in enumerate(
@@ -724,17 +809,43 @@ def main():
             else ""
         )
 
-        # sourceDateが空なら、
-        # まだCMS日時を確認していない。
-        if not source_date:
+        is_pdf = url.lower().endswith(
+            ".pdf"
+        )
+
+        # 旧版では、日時を取得できなかったPDFに
+        # sourceDate="unavailable" を保存していた。
+        #
+        # 今回はPDFについてHTTP Last-Modifiedを
+        # 利用できることが確認できたため、
+        # 既存PDFの unavailable は再確認する。
+        needs_timestamp_check = (
+            not source_date
+            or (
+                is_pdf
+                and source_date
+                == "unavailable"
+            )
+        )
+
+        if needs_timestamp_check:
             print()
             print(
                 f"[{number}/{len(all_urls)}] "
                 f"日時確認"
             )
 
-            dt = fetch_page_timestamp(
-                url
+            if (
+                is_pdf
+                and source_date
+                == "unavailable"
+            ):
+                pdf_rechecked += 1
+
+            dt, source_kind = (
+                fetch_source_timestamp(
+                    url
+                )
             )
 
             if dt:
@@ -746,12 +857,27 @@ def main():
                     format_datetime(dt)
                 )
 
-                timestamp_fetched += 1
+                if source_kind == "cms":
+                    cms_fetched += 1
+
+                elif (
+                    source_kind
+                    == "last-modified"
+                ):
+                    pdf_last_modified_fetched += 1
 
             else:
-                # 日時が取れないページは、
-                # 新規ページなら検出日時を使用。
-                # 既存ページなら既存pubDateを維持。
+                # 取得不能の場合：
+                #
+                # 既存項目なら既存pubDateを維持する。
+                # 新規項目でpubDateがない場合のみ、
+                # RSSとして必要な日時を埋めるため
+                # 検出日時を使用する。
+                #
+                # unavailable は次回以降もHTMLでは
+                # 再取得しない。
+                # PDFは将来Last-Modifiedが得られる
+                # 可能性を考え、次回も再確認対象になる。
                 if not pub_date:
                     dt = datetime.now(JST)
 
@@ -760,7 +886,6 @@ def main():
                     )
 
                 source_date = "unavailable"
-
                 timestamp_failed += 1
 
             time.sleep(0.2)
@@ -820,11 +945,21 @@ def main():
 
     print(
         "今回CMS日時を取得:",
-        timestamp_fetched,
+        cms_fetched,
     )
 
     print(
-        "CMS日時取得不能:",
+        "今回PDF Last-Modifiedを取得:",
+        pdf_last_modified_fetched,
+    )
+
+    print(
+        "既存PDFの再確認:",
+        pdf_rechecked,
+    )
+
+    print(
+        "ソース日時取得不能:",
         timestamp_failed,
     )
 
